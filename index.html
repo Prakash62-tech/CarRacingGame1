@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Nepali 3D Car Game</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+        body { font-family: Monospace; background-color: #000; margin: 0px; overflow: hidden; }
+        #info { position: absolute; top: 10px; width: 100%; text-align: center; color: #fff; z-index: 100; font-size: 16px; }
+        #ui-container { position: absolute; top: 10px; left: 10px; color: white; font-size: 24px; background-color: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px; }
+        #game-over-screen { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.7); color: white; text-align: center; z-index: 2000; }
+        #game-over-screen div { padding-top: 30vh; }
+        #game-over-screen h1 { font-size: 60px; margin: 0; }
+        #game-over-screen p { font-size: 24px; }
+        #restart-button { padding: 15px 30px; font-size: 20px; cursor: pointer; border: 2px solid white; background-color: transparent; color: white; border-radius: 10px; margin-top: 20px; }
+        .mobile-controls { display: none; position: fixed; bottom: 20px; width: 100%; z-index: 1000; }
+        .control-btn { width: 70px; height: 70px; background: rgba(255, 255, 255, 0.3); border: 2px solid rgba(255, 255, 255, 0.5); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; color: white; user-select: none; }
+        #left-btn { position: absolute; left: 20px; bottom: 0; }
+        #right-btn { position: absolute; left: 110px; bottom: 0; }
+        #gas-btn { position: absolute; right: 20px; bottom: 80px; }
+        #brake-btn { position: absolute; right: 20px; bottom: 0; }
+    </style>
+</head>
+<body>
+    <div id="info">3D Car Race Game</div>
+    <div id="ui-container">Score: <span id="score">0</span></div>
+    <div id="game-over-screen">
+        <div><h1>Game Over</h1><p>Your Final Score: <span id="final-score">0</span></p><button id="restart-button">Restart Game</button></div>
+    </div>
+    <div class="mobile-controls" id="mobileControlsContainer">
+        <div id="left-btn" class="control-btn">◀</div>
+        <div id="right-btn" class="control-btn">▶</div>
+        <div id="gas-btn" class="control-btn">▲</div>
+        <div id="brake-btn" class="control-btn">▼</div>
+    </div>
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+        let scene, camera, renderer, playerCar;
+        let carReady = false, isGameOver = false;
+        let keys = {};
+        let enemyCars = [], coins = [], roadSegments = [], buildings = [];
+        let score = 0;
+        
+        const roadBoundary = 13.5;
+        const roadSegmentLength = 200;
+
+        let velocity = 0;
+        const acceleration = 0.02;
+        const maxSpeed = 0.9;
+        const friction = 0.01;
+        const steerSpeed = 0.03;
+        const brakeForce = 0.04;
+
+        // --- राम्रो सडकको लागि नयाँ टेक्सचर ---
+        const textureLoader = new THREE.TextureLoader();
+        const roadTexture = textureLoader.load('https://unpkg.com/three@0.160.0/examples/textures/roughness_map.jpg');
+        roadTexture.wrapS = THREE.RepeatWrapping;
+        roadTexture.wrapT = THREE.RepeatWrapping;
+        roadTexture.repeat.set(5, 20); // टेक्सचरलाई मिलाउनको लागि
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb);
+            scene.fog = new THREE.Fog(0x87ceeb, 50, 400);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 5, 10);
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            directionalLight.position.set(50, 100, 50);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            
+            createInfiniteRoad();
+            createBuildings();
+            createStreetFurniture();
+            loadPlayerCar();
+            
+            document.addEventListener('keydown', (event) => keys[event.key.toLowerCase()] = true);
+            document.addEventListener('keyup', (event) => keys[event.key.toLowerCase()] = false);
+            document.getElementById('restart-button').addEventListener('click', restartGame);
+
+            setupMobileControls();
+            animate();
+        }
+
+        function createRoadSegment(zPos) {
+            const segmentGroup = new THREE.Group();
+
+            // सडकको सतह
+            const roadMaterial = new THREE.MeshPhongMaterial({ map: roadTexture, color: 0x505050 });
+            const roadGeometry = new THREE.PlaneGeometry(30, roadSegmentLength);
+            const roadMesh = new THREE.Mesh(roadGeometry, roadMaterial);
+            roadMesh.rotation.x = -Math.PI / 2;
+            segmentGroup.add(roadMesh);
+
+            // बीचको सेतो धर्का
+            const lineMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            const lineGeometry = new THREE.PlaneGeometry(0.5, 4);
+            for(let i = -roadSegmentLength / 2; i < roadSegmentLength / 2; i += 8) {
+                const line = new THREE.Mesh(lineGeometry, lineMaterial);
+                line.rotation.x = -Math.PI / 2;
+                line.position.set(0, 0.01, i);
+                segmentGroup.add(line);
+            }
+
+            // किनाराको रातो/सेतो पट्टी
+            const edgeGeometry = new THREE.BoxGeometry(0.5, 0.2, 4);
+            const redMaterial = new THREE.MeshPhongMaterial({ color: 0xff0000 });
+            const whiteMaterial = new THREE.MeshPhongMaterial({ color: 0xffffff });
+            for (let i = -roadSegmentLength/2; i < roadSegmentLength/2; i += 4) {
+                const isRed = Math.floor(i / 4) % 2 === 0;
+                const stripMaterial = isRed ? redMaterial : whiteMaterial;
+                const leftStrip = new THREE.Mesh(edgeGeometry, stripMaterial);
+                leftStrip.position.set(-15.25, 0.1, i);
+                segmentGroup.add(leftStrip);
+                const rightStrip = new THREE.Mesh(edgeGeometry, stripMaterial);
+                rightStrip.position.set(15.25, 0.1, i);
+                segmentGroup.add(rightStrip);
+            }
+
+            segmentGroup.position.z = zPos;
+            scene.add(segmentGroup);
+            roadSegments.push(segmentGroup);
+        }
+
+        function createInfiniteRoad() {
+            for(let i = 0; i < 3; i++) createRoadSegment(i * -roadSegmentLength + roadSegmentLength);
+        }
+
+        function updateInfiniteRoad() {
+            if (!playerCar) return;
+            const firstSegment = roadSegments[0];
+            if(playerCar.position.z < firstSegment.position.z - roadSegmentLength / 2) {
+                const lastSegment = roadSegments[roadSegments.length - 1];
+                firstSegment.position.z = lastSegment.position.z - roadSegmentLength;
+                roadSegments.push(roadSegments.shift());
+            }
+        }
+        
+        function createBuildings() { /* ... अपरिवर्तित ... */ }
+        function resetBuilding(building) { /* ... अपरिवर्तित ... */ }
+        function createStreetFurniture() { /* ... अपरिवर्तित ... */ }
+        function loadPlayerCar() { /* ... अपरिवर्तित ... */ }
+        function createEnemyCars(carModel) { /* ... अपरिवर्तित ... */ }
+        function resetEnemyCar(car) { /* ... अपरिवर्तित ... */ }
+        function createCoins() { /* ... अपरिवर्तित ... */ }
+        function resetCoin(coin){ /* ... अपरिवर्तित ... */ }
+        function setupMobileControls() { /* ... अपरिवर्तित ... */ }
+        function checkCollisions() { /* ... अपरिवर्तित ... */ }
+        function showGameOverScreen() { /* ... अपरिवर्तित ... */ }
+        
+        function restartGame() {
+            isGameOver = false; score = 0;
+            document.getElementById('score').innerText = score;
+            document.getElementById('game-over-screen').style.display = 'none';
+            
+            playerCar.position.set(0, 0.4, -5);
+            playerCar.rotation.set(0,0,0);
+            velocity = 0;
+
+            // --- यहाँ सडकलाई रिसेट गर्ने कोड थपिएको छ ---
+            roadSegments.forEach((segment, index) => {
+                segment.position.z = (index * -roadSegmentLength) + roadSegmentLength;
+            });
+
+            for(let car of enemyCars) resetEnemyCar(car);
+            for(let coin of coins) resetCoin(coin);
+            for(let building of buildings) resetBuilding(building);
+            
+            animate();
+        }
+
+        function updateCarMovement() { /* ... अपरिवर्तित ... */ }
+
+        function updateGameObjects() {
+            buildings.forEach(building => {
+                if (building.position.z > camera.position.z + 50) resetBuilding(building);
+            });
+            enemyCars.forEach(car => {
+                car.position.z += 0.4;
+                if(car.position.z > playerCar.position.z + 50) resetEnemyCar(car);
+            });
+            coins.forEach(coin => {
+                coin.rotation.y += 0.05;
+                if(coin.position.z > playerCar.position.z + 50) resetCoin(coin);
+            });
+        }
+
+        function animate() {
+            if (isGameOver) return;
+            requestAnimationFrame(animate);
+
+            if (carReady) {
+                updateCarMovement();
+                playerCar.position.x = THREE.MathUtils.clamp(playerCar.position.x, -roadBoundary, roadBoundary);
+                
+                updateInfiniteRoad();
+                updateGameObjects();
+                checkCollisions();
+
+                const relativeCameraOffset = new THREE.Vector3(0, 5, 12);
+                camera.position.lerp(playerCar.localToWorld(relativeCameraOffset), 0.08);
+                camera.lookAt(playerCar.position);
+            }
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+             camera.aspect = window.innerWidth / window.innerHeight;
+             camera.updateProjectionMatrix();
+             renderer.setSize(window.innerWidth, window.innerHeight);
+        }, false);
+        
+        // --- यी function हरूलाई init() भित्रबाट हटाइएको छ र यहाँ राखिएको छ ताकि कोड सफा देखियोस् ---
+        // (The code inside them is unchanged, I've just collapsed them here for brevity in the explanation)
+        createBuildings = function() { for (let i = 0; i < 50; i++) { const building = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshPhongMaterial({ color: Math.random() * 0xffffff })); resetBuilding(building); scene.add(building); buildings.push(building); } }
+        resetBuilding = function(building) { const scaleX = Math.random() * 12 + 8, scaleY = Math.random() * 60 + 20, scaleZ = Math.random() * 12 + 8; building.scale.set(scaleX, scaleY, scaleZ); const xPos = Math.random() > 0.5 ? Math.random() * 50 + 30 : -(Math.random() * 50 + 30); const zPos = (playerCar ? playerCar.position.z : 0) - 200 - (Math.random() * 400); building.position.set(xPos, scaleY / 2, zPos); }
+        createStreetFurniture = function() { const poleGeometry = new THREE.CylinderGeometry(0.15, 0.15, 8, 32); const poleMaterial = new THREE.MeshPhongMaterial({ color: 0x505050 }); for (let i = -400; i < 400; i += 40) { const poleL = new THREE.Mesh(poleGeometry, poleMaterial); poleL.position.set(-18, 4, i); scene.add(poleL); const poleR = new THREE.Mesh(poleGeometry, poleMaterial); poleR.position.set(18, 4, i); scene.add(poleR); } }
+        loadPlayerCar = function() { const loader = new GLTFLoader(); const dracoLoader = new DRACOLoader(); dracoLoader.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/gltf/'); loader.setDRACOLoader(dracoLoader); loader.load('https://threejs.org/examples/models/gltf/ferrari.glb', function (gltf) { playerCar = gltf.scene; playerCar.scale.set(0.8, 0.8, 0.8); playerCar.position.set(0, 0.4, -5); scene.add(playerCar); createEnemyCars(gltf.scene.clone()); createCoins(); carReady = true; }); }
+        createEnemyCars = function(carModel) { for (let i = 0; i < 5; i++) { const enemyCar = carModel.clone(); const bodyMaterial = new THREE.MeshPhysicalMaterial({ color: new THREE.Color(Math.random(), Math.random(), Math.random()) }); enemyCar.getObjectByName('body').material = bodyMaterial; resetEnemyCar(enemyCar); scene.add(enemyCar); enemyCars.push(enemyCar); } }
+        resetEnemyCar = function(car) { car.position.x = (Math.random() - 0.5) * (roadBoundary * 1.8); car.position.z = (playerCar ? playerCar.position.z : 0) - 100 - (Math.random() * 300); car.position.y = 0.4; }
+        createCoins = function() { const coinGeometry = new THREE.CylinderGeometry(0.7, 0.7, 0.1, 20); const coinMaterial = new THREE.MeshPhongMaterial({ color: 0xffd700, emissive: 0xccac00 }); for(let i=0; i<50; i++) { const coin = new THREE.Mesh(coinGeometry, coinMaterial); resetCoin(coin); scene.add(coin); coins.push(coin); } }
+        resetCoin = function(coin){ coin.position.x = (Math.random() - 0.5) * (roadBoundary * 1.8); coin.position.z = (playerCar ? playerCar.position.z : 0) - 50 - (Math.random() * 500); coin.position.y = 0.5; coin.visible = true; }
+        setupMobileControls = function() { if ('ontouchstart' in window) { document.getElementById('mobileControlsContainer').style.display = 'block'; const gasBtn = document.getElementById('gas-btn'), brakeBtn = document.getElementById('brake-btn'), leftBtn = document.getElementById('left-btn'), rightBtn = document.getElementById('right-btn'); gasBtn.addEventListener('touchstart', (e) => { e.preventDefault(); keys['arrowup'] = true; }, false); gasBtn.addEventListener('touchend', (e) => { e.preventDefault(); keys['arrowup'] = false; }, false); brakeBtn.addEventListener('touchstart', (e) => { e.preventDefault(); keys['arrowdown'] = true; }, false); brakeBtn.addEventListener('touchend', (e) => { e.preventDefault(); keys['arrowdown'] = false; }, false); leftBtn.addEventListener('touchstart', (e) => { e.preventDefault(); keys['arrowleft'] = true; }, false); leftBtn.addEventListener('touchend', (e) => { e.preventDefault(); keys['arrowleft'] = false; }, false); rightBtn.addEventListener('touchstart', (e) => { e.preventDefault(); keys['arrowright'] = true; }, false); rightBtn.addEventListener('touchend', (e) => { e.preventDefault(); keys['arrowright'] = false; }, false); } }
+        checkCollisions = function() { if (!playerCar) return; const playerBox = new THREE.Box3().setFromObject(playerCar); for(let enemyCar of enemyCars) { if(!enemyCar.visible) continue; const enemyBox = new THREE.Box3().setFromObject(enemyCar); if(playerBox.intersectsBox(enemyBox)) { isGameOver = true; showGameOverScreen(); } } for(let coin of coins) { if(!coin.visible) continue; const coinBox = new THREE.Box3().setFromObject(coin); if(playerBox.intersectsBox(coinBox)) { score += 10; document.getElementById('score').innerText = score; coin.visible = false; } } }
+        showGameOverScreen = function() { document.getElementById('final-score').innerText = score; document.getElementById('game-over-screen').style.display = 'block'; }
+        updateCarMovement = function() { if (keys['arrowup']) velocity = Math.min(maxSpeed, velocity + acceleration); if (keys['arrowdown']) velocity = Math.max(0, velocity - brakeForce); velocity = Math.max(0, velocity - friction); if (velocity > 0.01) { let turnSpeed = steerSpeed * (1 - (velocity / maxSpeed) * 0.5); if (keys['arrowleft']) playerCar.rotation.y += turnSpeed; if (keys['arrowright']) playerCar.rotation.y -= turnSpeed; } playerCar.translateZ(-velocity); }
+
+        init();
+    </script>
+</body>
+</html>
